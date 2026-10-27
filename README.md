@@ -57,6 +57,23 @@ Found 1 Elgato Stream Deck(s):
 	SerialNumber:        AL12H1A07123
 ````
 
+## Stream Deck +
+
+The `Plus` config describes the Stream Deck + (4×2 keys of 120 px, four dials and an 800×100 px
+touch strip). Beyond keys, it reports:
+
+- Dial turns as `EventDialTurn` with `Event.Delta`, the signed number of detents (positive is
+  clockwise). `State.DialPos` still accumulates an absolute 0-100 position for callers that
+  want one.
+- Dial presses as `EventDialPressed` / `EventDialReleased`.
+- Touch strip input as `EventTouchTap`, `EventTouchLongPress` (both with `Event.X`, `Event.Y`
+  in strip pixels) and `EventTouchSwipe` (with `Event.ToX`, `Event.ToY` where the swipe ended).
+
+The touch strip is drawn with `FillTouchStrip(img)` for the whole strip,
+`FillTouchStripRegion(x, y, img)` for a part of it (the 200×100 slot above dial `n` starts at
+`x = n * 200`), and `ClearTouchStrip()`. Images are sent as JPEG. On a model without a strip,
+`Config.HasTouchStrip()` is false and these return `ErrNoTouchStrip`.
+
 ## Documentation
 
 The auto generated documentation can be found at [godoc.org](https://godoc.org/github.com/dh1tw/streamdeck)

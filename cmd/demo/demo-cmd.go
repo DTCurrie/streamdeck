@@ -1,7 +1,9 @@
 package main
 
 import (
+	"image"
 	"image/color"
+	"image/draw"
 	"log"
 	"time"
 
@@ -44,6 +46,16 @@ func realMain() error {
 	})
 	if err != nil {
 		return err
+	}
+
+	// On a Stream Deck +, draw a label onto the slot above the first dial
+	if sd.Config.HasTouchStrip() {
+		slot := image.NewRGBA(image.Rect(0, 0, 200, 100))
+		draw.Draw(slot, slot.Bounds(), image.NewUniform(color.RGBA{0, 0, 255, 255}), image.Point{}, draw.Src)
+		err = sd.FillTouchStripRegion(0, 0, slot)
+		if err != nil {
+			return err
+		}
 	}
 
 	// capture Streamdeck events

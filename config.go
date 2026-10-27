@@ -13,10 +13,18 @@ type Config struct {
 	ImageFormat      string
 	ImageRotate      bool
 	ConvertKey       bool
+	NumDials         int // NumDials is the number of rotary dials, 0 on models without them.
+	TouchStripWidth  int // TouchStripWidth is the touch strip width in pixels, 0 on models without one.
+	TouchStripHeight int // TouchStripHeight is the touch strip height in pixels, 0 on models without one.
 }
 
 func (c Config) NumButtons() int {
 	return c.NumButtonRows * c.NumButtonColumns
+}
+
+// HasTouchStrip reports whether the model has a touch strip display.
+func (c Config) HasTouchStrip() bool {
+	return c.TouchStripWidth > 0 && c.TouchStripHeight > 0
 }
 
 // PanelWidth is the total screen width of the Stream Deck (including spacers).
@@ -76,6 +84,9 @@ var Plus = Config{
 	Spacer:           19,
 	ButtonSize:       120,
 	ImageFormat:      "jpg",
+	NumDials:         4,
+	TouchStripWidth:  800,
+	TouchStripHeight: 100,
 }
 
 var AllConfigs = []Config{Original, OriginalMk1, Original2, Plus}

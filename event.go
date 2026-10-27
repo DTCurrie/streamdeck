@@ -1,6 +1,7 @@
 package streamdeck
 
 import (
+	"encoding/binary"
 	"fmt"
 )
 
@@ -15,6 +16,12 @@ const (
 	EventDialPressed
 	EventDialReleased
 	EventDialTurn
+	// EventTouchTap is a short touch on the touch strip (Stream Deck +).
+	EventTouchTap
+	// EventTouchLongPress is a long touch on the touch strip (Stream Deck +).
+	EventTouchLongPress
+	// EventTouchSwipe is a drag across the touch strip (Stream Deck +).
+	EventTouchSwipe
 )
 
 func (ev EventKind) String() string {
@@ -29,18 +36,39 @@ func (ev EventKind) String() string {
 		return "dial-released"
 	case EventDialTurn:
 		return "dial-turn"
+	case EventTouchTap:
+		return "touch-tap"
+	case EventTouchLongPress:
+		return "touch-long-press"
+	case EventTouchSwipe:
+		return "touch-swipe"
 	default:
 		return "unknown"
 	}
 }
 
+// Event is one input event. Which is the key or dial index; it is 0 for touch events.
 type Event struct {
 	Kind  EventKind
 	Which int
+	// Delta is the number of detents a dial turned, positive clockwise. Set for EventDialTurn.
+	Delta int
+	// X and Y are the touch position on the touch strip in pixels. Set for the touch events.
+	X, Y int
+	// ToX and ToY are where the deck recognised a swipe, about 50 px from X, Y in the direction of
+	// travel; the deck reports the swipe then, not when the finger lifts. Set for EventTouchSwipe.
+	ToX, ToY int
 }
 
 func (e Event) String() string {
-	return fmt.Sprintf("%s:%d", e.Kind.String(), e.Which)
+	switch e.Kind {
+	case EventTouchTap, EventTouchLongPress:
+		return fmt.Sprintf("%s:%d,%d", e.Kind.String(), e.X, e.Y)
+	case EventTouchSwipe:
+		return fmt.Sprintf("%s:%d,%d->%d,%d", e.Kind.String(), e.X, e.Y, e.ToX, e.ToY)
+	default:
+		return fmt.Sprintf("%s:%d", e.Kind.String(), e.Which)
+	}
 }
 
 type State struct {
@@ -62,6 +90,8 @@ func (s *State) Update(c *Config, b []byte) ([]Event, error) {
 	switch b[1] {
 	case 0:
 		return s.updateKeyPress(b[4:])
+	case 2:
+		return updateTouch(b)
 	case 3:
 		if b[4] == 0 {
 			return s.updateDialPush(b[5:])
@@ -111,9 +141,9 @@ func (s *State) updateKeyPressOriginal(data []byte) ([]Event, error) {
 	changedKeys, s.Keys = applyBools(s.Keys, nd)
 	for _, changedKey := range changedKeys {
 		if s.Keys[changedKey] {
-			updateEvents = append(updateEvents, Event{EventKeyPressed, changedKey})
+			updateEvents = append(updateEvents, Event{Kind: EventKeyPressed, Which: changedKey})
 		} else {
-			updateEvents = append(updateEvents, Event{EventKeyReleased, changedKey})
+			updateEvents = append(updateEvents, Event{Kind: EventKeyReleased, Which: changedKey})
 		}
 	}
 	return updateEvents, nil
@@ -126,9 +156,9 @@ func (s *State) updateKeyPress(data []byte) ([]Event, error) {
 	changedKeys, s.Keys = applyBools(s.Keys, data)
 	for _, changedKey := range changedKeys {
 		if s.Keys[changedKey] {
-			updateEvents = append(updateEvents, Event{EventKeyPressed, changedKey})
+			updateEvents = append(updateEvents, Event{Kind: EventKeyPressed, Which: changedKey})
 		} else {
-			updateEvents = append(updateEvents, Event{EventKeyReleased, changedKey})
+			updateEvents = append(updateEvents, Event{Kind: EventKeyReleased, Which: changedKey})
 		}
 	}
 	return updateEvents, nil
@@ -141,46 +171,71 @@ func (s *State) updateDialPush(data []byte) ([]Event, error) {
 	updateEvents := []Event{}
 	for _, changedKey := range changedDialPushs {
 		if s.DialPush[changedKey] {
-			updateEvents = append(updateEvents, Event{EventDialPressed, changedKey})
+			updateEvents = append(updateEvents, Event{Kind: EventDialPressed, Which: changedKey})
 		} else {
-			updateEvents = append(updateEvents, Event{EventDialReleased, changedKey})
+			updateEvents = append(updateEvents, Event{Kind: EventDialReleased, Which: changedKey})
 		}
 	}
 	return updateEvents, nil
 }
 
+// updateDialTurn emits one event per dial that moved, carrying its signed delta, and keeps
+// DialPos (clamped to 0..DialMax) for callers that want an absolute position.
 func (s *State) updateDialTurn(data []byte) ([]Event, error) {
-	var changedDialTurns int
 	updateEvents := []Event{}
-	changedDialTurns, s.DialPos = applyDelta(s.DialPos, data)
-
-	if changedDialTurns >= 0 {
-		updateEvents = append(updateEvents, Event{EventDialTurn, changedDialTurns})
-		return updateEvents, nil
-	}
-	return nil, nil
-}
-
-func applyDelta(in []int, data []byte) (int, []int) {
-	changed := -1
 
 	for i, d := range data {
-		if d != 0 {
-			changed = i
-		}
-		if len(in) <= i {
-			in = append(in, 50)
+		if len(s.DialPos) <= i {
+			s.DialPos = append(s.DialPos, DialMax/2)
 		}
 
-		output := in[i]
-
-		if d < 0x80 {
-			output = min(DialMax, output+int(d))
-		} else {
-			output = max(0, output-(256-int(d)))
+		delta := int(int8(d))
+		if delta == 0 {
+			continue
 		}
 
-		in[i] = output
+		s.DialPos[i] = max(0, min(DialMax, s.DialPos[i]+delta))
+		updateEvents = append(updateEvents, Event{Kind: EventDialTurn, Which: i, Delta: delta})
 	}
-	return changed, in
+
+	if len(updateEvents) == 0 {
+		return nil, nil
+	}
+	return updateEvents, nil
+}
+
+// touchReportLen is the shortest touch report: id, type, two reserved bytes, the event type,
+// one reserved byte, and four little-endian uint16 coordinates.
+const touchReportLen = 14
+
+const (
+	touchTypeTap       = 1
+	touchTypeLongPress = 2
+	touchTypeSwipe     = 3
+)
+
+func updateTouch(b []byte) ([]Event, error) {
+	if len(b) < touchReportLen {
+		return nil, fmt.Errorf("touch report too short: %d bytes", len(b))
+	}
+
+	e := Event{
+		X: int(binary.LittleEndian.Uint16(b[6:])),
+		Y: int(binary.LittleEndian.Uint16(b[8:])),
+	}
+
+	switch b[4] {
+	case touchTypeTap:
+		e.Kind = EventTouchTap
+	case touchTypeLongPress:
+		e.Kind = EventTouchLongPress
+	case touchTypeSwipe:
+		e.Kind = EventTouchSwipe
+		e.ToX = int(binary.LittleEndian.Uint16(b[10:]))
+		e.ToY = int(binary.LittleEndian.Uint16(b[12:]))
+	default:
+		return nil, fmt.Errorf("unknown touch event type %d", b[4])
+	}
+
+	return []Event{e}, nil
 }
